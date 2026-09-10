@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build, test and scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # The build verifies the upstream PGP signature, so a tampered or
+      # unsigned tarball fails here rather than shipping.
+      - name: Build image
+        run: docker build -t knot-container:test .
+
+      - name: Run image tests
+        run: ./hack/test-image.sh knot-container:test
+
+      # This repository exists because the upstream image carries a
+      # distribution's worth of CVEs. Fail if we reintroduce any.
+      - name: Scan for vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: knot-container:test
+          format: table
+          exit-code: "1"
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: CRITICAL,HIGH,MEDIUM

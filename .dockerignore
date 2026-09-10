@@ -1,0 +1,6 @@
+.git
+.github
+hack/
+.dockerignore
+README.md
+LICENSE
