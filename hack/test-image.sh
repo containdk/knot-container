@@ -240,8 +240,21 @@ fi
 
 # The server's own version, not a constant typed into this script.
 server_version=$(docker exec knot-test-primary /sbin/knotd --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-grep -qF "libknot_version=\"${server_version}\"" <<<"${metrics}" \
-    || fail "the exporter reports a different libknot than the server's ${server_version}"
+IFS=. read -r v_major v_minor v_patch <<<"${server_version}"
+
+# Knot defines KNOT_VERSION_PATCH as the literal 0x0<patch>, so patch 10 is the
+# token 0x010 -- 16, not 10. The exporter reads those macros and only corrects
+# for the encoding above 99, so from Knot 3.6.10 on it reports a patch level the
+# server does not have. Reproduce the same arithmetic here rather than comparing
+# the strings, or this assertion goes red on a routine patch bump with a message
+# blaming an ABI mismatch that is not there.
+expected_patch=$(printf '%d' "0x0${v_patch}")
+[ "${expected_patch}" -gt 99 ] && \
+    expected_patch=$(( ((expected_patch >> 4) & 0xF) * 10 + (expected_patch & 0xF) ))
+expected_version="${v_major}.${v_minor}.${expected_patch}"
+
+grep -qF "libknot_version=\"${expected_version}\"" <<<"${metrics}" \
+    || fail "the exporter reports a different libknot than the server's ${server_version} (expected ${expected_version} after Knot's patch encoding)"
 pass "the exporter and the server agree on libknot ${server_version}"
 
 # knot_build_info is emitted before the control socket is touched, so the check
@@ -257,6 +270,22 @@ pass "the exporter reports the serial knotd actually holds (${exported})"
 grep -q "^knot_stats_response_code" <<<"${metrics}" \
     || fail "no mod-stats counters after a query; the module is not doing anything"
 pass "mod-stats counters are exported"
+
+# /health is the endpoint a probe would use, and the only one that reports the
+# control socket being gone. Asserting it answers OK says little on its own, so
+# take the socket away and check it notices.
+health=$(docker exec knot-test-primary curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9433/health)
+[ "${health}" = "200" ] || fail "/health answered ${health} against a healthy server"
+
+docker exec -u 0 knot-test-primary sh -c 'rm -f /rundir/knot.sock'
+for attempt in $(seq 1 15); do
+    health=$(docker exec knot-test-primary curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9433/health)
+    [ "${health}" = "503" ] && break
+    sleep 1
+done
+[ "${health}" = "503" ] \
+    || fail "/health still answered ${health} with the control socket gone; a probe on it would never fire"
+pass "/health tracks the control socket, not just the listener"
 
 echo
 echo "All image tests passed. ✅"

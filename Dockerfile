@@ -3,7 +3,10 @@
 # renovate: datasource=gitlab-tags depName=knot/knot-dns registryUrl=https://gitlab.nic.cz
 ARG KNOT_VERSION="3.6.0"
 
-# renovate: datasource=github-releases depName=CZ-NIC/knot-exporter
+# extractVersion strips the tag's v prefix, which this ARG does not carry -- the
+# URL built from it would 404 otherwise. Bumping it requires updating the commit
+# below in the same change; the build asserts the two agree.
+# renovate: datasource=github-releases depName=CZ-NIC/knot-exporter extractVersion=^v(?<version>.*)$
 ARG KNOT_EXPORTER_VERSION="3.5.3"
 # The commit that tag points at. Git object hashes are stable; the bytes of
 # GitHub's generated tag archives are not, so the commit is what can be checked.
@@ -99,6 +102,9 @@ ARG KNOT_EXPORTER_COMMIT
 ARG XSYS_VERSION
 
 RUN apk add --no-cache git go
+# The Go build below mounts its module and build caches rather than baking them
+# into a layer: they run to a few hundred megabytes, and release.yml exports
+# this stage to the shared Actions cache.
 
 # A directory of its own: /build already holds the Knot source in this stage.
 WORKDIR /build/exporter
@@ -115,12 +121,14 @@ RUN git clone --quiet https://github.com/CZ-NIC/knot-exporter.git . && \
 # @latest: a floating fetch inside a cached layer is unpinned on a cache miss and
 # frozen on a hit, which is the worst of both and breaks reproducibility of an
 # artifact this repository signs.
-RUN go get "golang.org/x/sys@${XSYS_VERSION}" && \
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/root/go/pkg/mod \
+    go get "golang.org/x/sys@${XSYS_VERSION}" && \
     PKG_CONFIG_PATH=/tmp/knot-install/lib/pkgconfig \
     PKG_CONFIG_SYSROOT_DIR=/tmp/knot-install \
-    CGO_CFLAGS="-I/tmp/knot-install/include" \
-    CGO_LDFLAGS="-L/tmp/knot-install/lib" \
-    CGO_ENABLED=1 go build -trimpath \
+    CGO_CFLAGS="-I/tmp/knot-install/include -O2 -D_FORTIFY_SOURCE=3 -fstack-protector-strong" \
+    CGO_LDFLAGS="-L/tmp/knot-install/lib -Wl,-z,relro,-z,now" \
+    CGO_ENABLED=1 go build -trimpath -buildmode=pie \
         -ldflags "-s -w -X main.version=${KNOT_EXPORTER_VERSION}" \
         -o /knot-exporter ./cmd/knot-exporter
 

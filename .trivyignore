@@ -1,0 +1,10 @@
+# Findings suppressed for the CI gate, with the reason and a date to revisit.
+#
+# The gate in ci.yml fails on any CRITICAL, HIGH or MEDIUM, which is the point
+# of this repository. That leaves no way to ship while waiting on a fix that is
+# not ours to make -- a Go stdlib advisory with no released toolchain carrying
+# the patch, say, which lands in the exporter binary and blocks every build
+# including ones that have nothing to do with it.
+#
+# One entry per line, as CVE-ID, each with a comment saying why and when it was
+# added. Empty is the resting state; anything in here is a debt, not a decision.

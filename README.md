@@ -53,9 +53,20 @@ bring an HTTP/2 server and a reverse proxy. OpenSSL is still present because
 
 `knot-exporter` is built into the same image and lives at `/bin/knot-exporter`.
 It reads the `knotd` control socket, so it runs as a sidecar sharing the pod's
-`rundir`. It serves `/metrics` and `/health` on port 9433, but it binds
-`127.0.0.1` by default — pass `-web-listen-addr 0.0.0.0` or nothing can scrape
-it.
+`rundir`. Two flags and the user it runs as all have to be set, or it does not
+work at all:
+
+```
+/bin/knot-exporter -knot-socket-path /rundir/knot.sock -web-listen-addr 0.0.0.0
+```
+
+It looks for the socket at `/run/knot/knot.sock`, and a missing socket is fatal
+rather than something it waits out. It binds `127.0.0.1`, so on the default
+nothing can scrape it. And the socket is mode 0220 owned by `knot:knot`, so the
+sidecar has to run as uid and gid 53 like the server — anything else gets
+`EACCES` and exits. It serves `/metrics` and `/health` on port 9433; `/health`
+answers 503 when the control socket is unreachable, which makes it usable as a
+probe.
 
 Without `mod-stats` it still reports zone serials, zone size and maximum TTL,
 and the server's zone count. `mod-stats` is what adds the query and response
@@ -73,8 +84,14 @@ instead of misbehaving at runtime. A separate image would have to carry
 reintroduce exactly the skew this avoids.
 
 Upstream releases the exporter in step with Knot and does not guarantee
-cross-version compatibility. That warning is about the prebuilt binaries; it
-does not apply to a build from source against a known library.
+cross-version compatibility. That warning is about the prebuilt binaries, and
+compiling from source settles the ABI half of it. The other half it does not
+settle: the exporter reads the zone timers positionally out of `knotc`
+zone-status output, so a column-order change upstream drops those metrics
+silently. It also decodes Knot's `KNOT_VERSION_PATCH`, which is the literal
+`0x0<patch>`, only above 99 — from Knot 3.6.10 on it will report a patch level
+the server does not have. The image test reproduces that arithmetic rather than
+comparing the strings, so it stays meaningful without going red on a bump.
 
 ## Layout
 
