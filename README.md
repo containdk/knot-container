@@ -127,6 +127,10 @@ one-line change and the tarball is still verified.
 Released images are multi-arch, signed with cosign keyless OIDC, and carry an
 SBOM and provenance attestation.
 
+The signature is an OCI 1.1 referrer rather than a `.sig` tag, which is what
+cosign v3 writes. A v2 client looks only for the tag and reports "no signatures
+found" against an image that is properly signed, so verify with v3 or newer.
+
 ## Building and testing
 
 ```bash

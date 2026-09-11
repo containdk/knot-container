@@ -134,7 +134,8 @@ jobs:
           body: |
             Image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}`
 
-            Verify the signature with:
+            Verify the signature with cosign v3 or newer — the signature is an
+            OCI 1.1 referrer, and a v2 client reports "no signatures found":
 
             ```bash
             cosign verify \
