@@ -153,7 +153,10 @@ Push a `v*` tag. CI builds amd64 natively, runs the image tests and the
 vulnerability scan against it, and only then builds for amd64 and arm64, pushes
 to `ghcr.io/containdk/knot-container`, signs the digest and publishes a release.
 The arm64 build is emulated and takes considerably longer than the native one.
-Only amd64 is tested; nothing runs the suite against the arm64 image.
+
+Only amd64 is tested. arm64 exists for developer laptops and never runs in
+production, so the suite is not worth the QEMU run it would cost on every
+release; amd64 is the artifact that has to be right.
 
 Tags are `<knot version>-<packaging revision>`, and the revision is always
 present — `v3.6.1-1`, not `v3.6.1`. Renovate reads the suffix as a compatibility
