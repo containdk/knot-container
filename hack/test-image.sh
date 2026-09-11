@@ -11,6 +11,7 @@ set -euo pipefail
 IMAGE="${1:-knot-container:test}"
 NET="knot-image-test"
 ZONE="example.test"
+KNOT_VERSION="${KNOT_VERSION:-3.6.0}"
 TSIG="$(head -c 32 /dev/urandom | base64)"
 
 pass() { echo "  ✅ $*"; }
@@ -68,6 +69,10 @@ remote:
   - id: secondary
     address: ${secondary_ip}
     key: transfer-key
+mod-stats:
+  - id: default
+    request-protocol: on
+    response-code: on
 template:
   - id: default
     storage: "/storage"
@@ -76,6 +81,7 @@ template:
     journal-content: all
     semantic-checks: on
     acl: [ update-acl, transfer-acl ]
+    global-module: [ mod-stats/default ]
     notify: [ secondary ]
 zone:
   - domain: ${ZONE}
@@ -189,6 +195,38 @@ docker exec knot-test-primary sh -c '
     /sbin/knotc -c /tmp/modules.conf conf-check' >/dev/null \
     || fail "mod-stats or mod-cookies is not built in"
 pass "mod-rrl, mod-stats and mod-cookies are available"
+
+# The bundled exporter must talk to this build of Knot.
+step_exporter() {
+    # The exporter is CGO code against libknot and upstream does not promise a
+    # mismatched pair works, so assert it reports the libknot it was built
+    # against and actually reads the server.
+    docker exec -d knot-test-primary sh -c \
+        '/bin/knot-exporter -knot-socket-path /rundir/knot.sock -web-listen-addr 127.0.0.1 -web-listen-port 9433 > /tmp/exporter.log 2>&1'
+    for attempt in $(seq 1 20); do
+        grep -q "Metrics available" <<<"$(docker exec knot-test-primary cat /tmp/exporter.log 2>/dev/null || true)" && break
+        sleep 1
+    done
+
+    # The image carries no HTTP client, so scrape from a throwaway container
+    # sharing its network namespace.
+    metrics=$(docker run --rm --network "container:knot-test-primary" cgr.dev/chainguard/wolfi-base \
+        sh -c 'apk add --no-cache curl >/dev/null 2>&1; curl -sf http://127.0.0.1:9433/metrics' 2>/dev/null || true)
+
+    grep -q "libknot_version=\"${KNOT_VERSION}\"" <<<"${metrics}" \
+        || fail "the exporter does not report libknot ${KNOT_VERSION}; it was built against a different library"
+    pass "the exporter reports libknot ${KNOT_VERSION}"
+
+    grep -q "^knot_zone_serial{zone=\"${ZONE}.\"}" <<<"${metrics}" \
+        || fail "the exporter does not expose a per-zone serial, which the sync alert needs"
+    pass "the exporter exposes knot_zone_serial for ${ZONE}"
+
+    grep -q "^knot_stats_response_code" <<<"${metrics}" \
+        || fail "the exporter exposes no mod-stats counters"
+    pass "the exporter exposes mod-stats counters"
+}
+
+step_exporter
 
 echo
 echo "All image tests passed. ✅"

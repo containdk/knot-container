@@ -1,6 +1,6 @@
 # knot-container
 
-A minimal [Knot DNS][knot] image for the Contain Platform, built from the
+A [Knot DNS][knot] image for the Contain Platform, built from the
 upstream release tarball on [Wolfi][wolfi].
 
 Consumed by [component-knot-authoritative][component], which runs the
@@ -16,7 +16,7 @@ calls, and the vulnerability scan reflects that:
 | --- | --- | --- |
 | Knot DNS | 3.6.0 | 3.6.0 |
 | libc | glibc | glibc |
-| Size | 159 MB | 47.5 MB |
+| Size | 159 MB | 58 MB |
 | Packages | 107 | 37 |
 | Vulnerabilities | 213, six critical | 0 |
 
@@ -37,13 +37,35 @@ Left out deliberately, because the platform does not use them and each one drags
 libraries into the runtime image: dnstap, redis, XDP, GeoIP, systemd and D-Bus.
 XDP would also need privileged networking.
 
+## The exporter
+
+`knot-exporter` is built into the same image and lives at `/bin/knot-exporter`.
+It reads the `knotd` control socket, so it runs as a sidecar sharing the pod's
+`rundir`, and it needs Knot's `mod-stats` module enabled to report anything
+beyond zone serials and memory. It listens on 9433 and serves `/metrics` and
+`/health`.
+
+It shares the image rather than having one of its own, because it is CGO code
+against `libknot` and upstream does not promise that a mismatched exporter and
+daemon work together. Compiling it here, against the `libknot` built two stages
+earlier, makes the pair match by construction — a real API break fails the build
+instead of misbehaving at runtime. A separate image would have to carry
+`libknot` and its whole dependency chain anyway, so it would save little and
+reintroduce exactly the skew this avoids.
+
+Upstream releases the exporter in step with Knot and does not guarantee
+cross-version compatibility. That warning is about the prebuilt binaries; it
+does not apply to a build from source against a known library. The image test
+asserts the exporter reports the same `libknot` version the server was built
+from, so a mismatch fails rather than ships.
+
 ## Layout
 
 The image keeps upstream's paths and user so that it is a drop-in replacement:
 
 | | |
 | --- | --- |
-| Binaries | `/sbin/knotd`, `/sbin/knotc`, `/usr/bin/kdig`, `/usr/bin/knsupdate`, `keymgr`, `kjournalprint` |
+| Binaries | `/sbin/knotd`, `/sbin/knotc`, `/bin/knot-exporter`, `/usr/bin/kdig`, `/usr/bin/knsupdate`, `keymgr`, `kjournalprint` |
 | Configuration | `/config` |
 | Runtime state | `/rundir` |
 | Zone storage | `/storage` |

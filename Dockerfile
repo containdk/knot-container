@@ -3,6 +3,9 @@
 # renovate: datasource=gitlab-tags depName=knot/knot-dns registryUrl=https://gitlab.nic.cz
 ARG KNOT_VERSION="3.6.0"
 
+# renovate: datasource=github-releases depName=CZ-NIC/knot-exporter
+ARG KNOT_EXPORTER_VERSION="3.5.3"
+
 # Daniel Salzman <daniel.salzman@nic.cz>, who signs the Knot DNS releases.
 # Pinning the key rather than a tarball checksum means a version bump needs no
 # second edit, and the tarball is still verified.
@@ -69,6 +72,44 @@ RUN CFLAGS="-g -O2 -DNDEBUG -D_FORTIFY_SOURCE=3 -fstack-protector-strong" \
     make install-strip DESTDIR=/tmp/knot-install && \
     find /tmp/knot-install -name '*.a' -o -name '*.la' | xargs -r rm -f
 
+# The exporter is CGO code against libknot, and upstream does not promise that a
+# mismatched exporter and daemon work together. Compiling it here against the
+# libknot built in the previous stage makes the pair match by construction: a
+# real API break fails this build rather than misbehaving at runtime.
+FROM cgr.dev/chainguard/wolfi-base AS exporter
+ARG KNOT_VERSION
+ARG KNOT_EXPORTER_VERSION
+
+RUN apk add --no-cache \
+        build-base \
+        curl \
+        gnutls-dev \
+        go \
+        jansson-dev \
+        libcap-ng-dev \
+        libedit-dev \
+        libidn2-dev \
+        lmdb-dev \
+        nghttp2-dev \
+        ngtcp2-dev \
+        pkgconf \
+        userspace-rcu-dev \
+        zlib-dev
+
+COPY --from=builder /tmp/knot-install/include/ /usr/include/
+COPY --from=builder /tmp/knot-install/lib/     /usr/lib/
+
+WORKDIR /build
+RUN curl -fsSL "https://github.com/CZ-NIC/knot-exporter/archive/refs/tags/v${KNOT_EXPORTER_VERSION}.tar.gz" \
+      | tar -xz --strip-components=1 && \
+    # Upstream pins an x/sys carrying a Windows-only advisory. It is not
+    # reachable in a Linux binary, but the fix is a version bump and carrying an
+    # explanation at every scan costs more than taking it.
+    go get golang.org/x/sys@latest && go mod tidy && \
+    CGO_ENABLED=1 go build -trimpath \
+        -ldflags "-s -w -X main.version=${KNOT_EXPORTER_VERSION}" \
+        -o /knot-exporter ./cmd/knot-exporter
+
 FROM cgr.dev/chainguard/wolfi-base
 ARG KNOT_VERSION
 ARG UID=53
@@ -94,6 +135,7 @@ RUN apk add --no-cache \
 COPY --from=builder /tmp/knot-install/bin/  /bin/
 COPY --from=builder /tmp/knot-install/sbin/ /sbin/
 COPY --from=builder /tmp/knot-install/lib/  /lib/
+COPY --from=exporter /knot-exporter         /bin/knot-exporter
 
 USER ${UID}:${UID}
 EXPOSE 53/udp 53/tcp 853/udp 853/tcp
