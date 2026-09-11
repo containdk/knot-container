@@ -5,6 +5,11 @@ ARG KNOT_VERSION="3.6.0"
 
 # renovate: datasource=github-releases depName=CZ-NIC/knot-exporter
 ARG KNOT_EXPORTER_VERSION="3.5.3"
+# The commit that tag points at. Git object hashes are stable; the bytes of
+# GitHub's generated tag archives are not, so the commit is what can be checked.
+ARG KNOT_EXPORTER_COMMIT="e9b4344da7f53bb38cc34928705e920b93922ca3"
+# renovate: datasource=go depName=golang.org/x/sys
+ARG XSYS_VERSION="v0.48.0"
 
 # Daniel Salzman <daniel.salzman@nic.cz>, who signs the Knot DNS releases.
 # Pinning the key rather than a tarball checksum means a version bump needs no
@@ -73,45 +78,47 @@ RUN CFLAGS="-g -O2 -DNDEBUG -D_FORTIFY_SOURCE=3 -fstack-protector-strong" \
     find /tmp/knot-install -name '*.a' -o -name '*.la' | xargs -r rm -f
 
 # The exporter is CGO code against libknot, and upstream does not promise that a
-# mismatched exporter and daemon work together. Compiling it here against the
-# libknot built in the previous stage makes the pair match by construction: a
-# real API break fails this build rather than misbehaving at runtime.
-FROM cgr.dev/chainguard/wolfi-base AS exporter
-ARG KNOT_VERSION
+# mismatched exporter and daemon work together, so it is built here against the
+# libknot produced by the stage above.
+#
+# Built FROM builder rather than a fresh base: the two need all but one of the
+# same packages, and keeping the install tree where it was put means the include
+# and library paths are stated outright. Copying it into /usr instead made the
+# build succeed on the compiler's default search paths while libknot.pc pointed
+# at /include, which does not exist — working by coincidence, and one transitive
+# libknot from the distro away from linking the wrong library.
+FROM builder AS exporter
 ARG KNOT_EXPORTER_VERSION
+ARG KNOT_EXPORTER_COMMIT
+ARG XSYS_VERSION
 
-RUN apk add --no-cache \
-        build-base \
-        curl \
-        gnutls-dev \
-        go \
-        jansson-dev \
-        libcap-ng-dev \
-        libedit-dev \
-        libidn2-dev \
-        lmdb-dev \
-        nghttp2-dev \
-        ngtcp2-dev \
-        pkgconf \
-        userspace-rcu-dev \
-        zlib-dev
+RUN apk add --no-cache git go
 
-COPY --from=builder /tmp/knot-install/include/ /usr/include/
-COPY --from=builder /tmp/knot-install/lib/     /usr/lib/
+# A directory of its own: /build already holds the Knot source in this stage.
+WORKDIR /build/exporter
+# Cloned rather than fetched as a tarball so the content can be verified: the
+# commit hash covers the tree, and git checks it. The Knot half of this image is
+# verified against a signature; this half should not be the exception.
+RUN git clone --quiet https://github.com/CZ-NIC/knot-exporter.git . && \
+    git checkout --quiet "${KNOT_EXPORTER_COMMIT}" && \
+    test "$(git rev-parse HEAD)" = "${KNOT_EXPORTER_COMMIT}" && \
+    test "$(git rev-parse "v${KNOT_EXPORTER_VERSION}^{commit}")" = "${KNOT_EXPORTER_COMMIT}"
 
-WORKDIR /build
-RUN curl -fsSL "https://github.com/CZ-NIC/knot-exporter/archive/refs/tags/v${KNOT_EXPORTER_VERSION}.tar.gz" \
-      | tar -xz --strip-components=1 && \
-    # Upstream pins an x/sys carrying a Windows-only advisory. It is not
-    # reachable in a Linux binary, but the fix is a version bump and carrying an
-    # explanation at every scan costs more than taking it.
-    go get golang.org/x/sys@latest && go mod tidy && \
+# Upstream's go.mod carries an x/sys with a Windows-only advisory, unreachable in
+# a Linux binary but noisy at every scan. Pinned to an exact version rather than
+# @latest: a floating fetch inside a cached layer is unpinned on a cache miss and
+# frozen on a hit, which is the worst of both and breaks reproducibility of an
+# artifact this repository signs.
+RUN go get "golang.org/x/sys@${XSYS_VERSION}" && \
+    PKG_CONFIG_PATH=/tmp/knot-install/lib/pkgconfig \
+    PKG_CONFIG_SYSROOT_DIR=/tmp/knot-install \
+    CGO_CFLAGS="-I/tmp/knot-install/include" \
+    CGO_LDFLAGS="-L/tmp/knot-install/lib" \
     CGO_ENABLED=1 go build -trimpath \
         -ldflags "-s -w -X main.version=${KNOT_EXPORTER_VERSION}" \
         -o /knot-exporter ./cmd/knot-exporter
 
 FROM cgr.dev/chainguard/wolfi-base
-ARG KNOT_VERSION
 ARG UID=53
 
 RUN apk add --no-cache \
@@ -138,5 +145,7 @@ COPY --from=builder /tmp/knot-install/lib/  /lib/
 COPY --from=exporter /knot-exporter         /bin/knot-exporter
 
 USER ${UID}:${UID}
-EXPOSE 53/udp 53/tcp 853/udp 853/tcp
+# 9433 is the exporter's metrics port. It binds loopback unless told
+# otherwise, so a sidecar must pass -web-listen-addr.
+EXPOSE 53/udp 53/tcp 853/udp 853/tcp 9433/tcp
 ENTRYPOINT ["/sbin/knotd"]

@@ -11,7 +11,6 @@ set -euo pipefail
 IMAGE="${1:-knot-container:test}"
 NET="knot-image-test"
 ZONE="example.test"
-KNOT_VERSION="${KNOT_VERSION:-3.6.0}"
 TSIG="$(head -c 32 /dev/urandom | base64)"
 
 pass() { echo "  ✅ $*"; }
@@ -191,42 +190,63 @@ grep -q REFUSED <<<"${outside}" || fail "a query outside the zone was not refuse
 pass "queries outside the zone are refused"
 
 docker exec knot-test-primary sh -c '
-    printf "server:\n    rundir: \"/rundir\"\nmod-stats:\n  - id: default\n    request-protocol: on\nmod-cookies:\n  - id: default\ntemplate:\n  - id: default\n    storage: \"/storage\"\n    global-module: [ mod-stats/default, mod-cookies/default ]\n" > /tmp/modules.conf
+    printf "server:\n    rundir: \"/rundir\"\nmod-rrl:\n  - id: default\n    rate-limit: 200\nmod-stats:\n  - id: default\nmod-cookies:\n  - id: default\ntemplate:\n  - id: default\n    storage: \"/storage\"\n    global-module: [ mod-cookies/default, mod-stats/default, mod-rrl/default ]\n" > /tmp/modules.conf
     /sbin/knotc -c /tmp/modules.conf conf-check' >/dev/null \
-    || fail "mod-stats or mod-cookies is not built in"
+    || fail "one of mod-rrl, mod-stats or mod-cookies is not built in"
 pass "mod-rrl, mod-stats and mod-cookies are available"
 
-# The bundled exporter must talk to this build of Knot.
-step_exporter() {
-    # The exporter is CGO code against libknot and upstream does not promise a
-    # mismatched pair works, so assert it reports the libknot it was built
-    # against and actually reads the server.
-    docker exec -d knot-test-primary sh -c \
-        '/bin/knot-exporter -knot-socket-path /rundir/knot.sock -web-listen-addr 127.0.0.1 -web-listen-port 9433 > /tmp/exporter.log 2>&1'
-    for attempt in $(seq 1 20); do
-        grep -q "Metrics available" <<<"$(docker exec knot-test-primary cat /tmp/exporter.log 2>/dev/null || true)" && break
-        sleep 1
-    done
+# The bundled exporter must talk to this build of Knot. Written inline like every
+# other step here, and with each failure named, because the previous version
+# reported a registry outage, a process that never started and a genuine ABI
+# skew with the same message.
+docker exec -d knot-test-primary sh -c \
+    '/bin/knot-exporter -knot-socket-path /rundir/knot.sock -web-listen-addr 0.0.0.0 -web-listen-port 9433 > /tmp/exporter.log 2>&1'
 
-    # The image carries no HTTP client, so scrape from a throwaway container
-    # sharing its network namespace.
-    metrics=$(docker run --rm --network "container:knot-test-primary" cgr.dev/chainguard/wolfi-base \
-        sh -c 'apk add --no-cache curl >/dev/null 2>&1; curl -sf http://127.0.0.1:9433/metrics' 2>/dev/null || true)
+# mod-stats counters only exist once a query has been answered, so ask one here
+# rather than depending on a step further up the file having happened to do it.
+docker exec knot-test-primary /usr/bin/kdig @127.0.0.1 "${ZONE}" SOA >/dev/null 2>&1 || true
 
-    grep -q "libknot_version=\"${KNOT_VERSION}\"" <<<"${metrics}" \
-        || fail "the exporter does not report libknot ${KNOT_VERSION}; it was built against a different library"
-    pass "the exporter reports libknot ${KNOT_VERSION}"
+# The image ships no HTTP client, so add one to the container under test. That
+# is a smaller intrusion than pulling a second image over the network inside a
+# step whose failures are otherwise indistinguishable — and this test already
+# writes config and chowns directories in the same container.
+docker exec -u 0 knot-test-primary sh -c 'apk add --no-cache curl >/dev/null' \
+    || fail "could not install curl into the test container; the scrape needs an HTTP client"
 
-    grep -q "^knot_zone_serial{zone=\"${ZONE}.\"}" <<<"${metrics}" \
-        || fail "the exporter does not expose a per-zone serial, which the sync alert needs"
-    pass "the exporter exposes knot_zone_serial for ${ZONE}"
+# Poll the scrape itself. The log line the previous version waited on is printed
+# before the listener is up, so it proved nothing.
+metrics=""
+for attempt in $(seq 1 30); do
+    metrics=$(docker exec knot-test-primary curl -sf http://127.0.0.1:9433/metrics 2>/dev/null || true)
+    [ -n "${metrics}" ] && break
+    sleep 1
+done
 
-    grep -q "^knot_stats_response_code" <<<"${metrics}" \
-        || fail "the exporter exposes no mod-stats counters"
-    pass "the exporter exposes mod-stats counters"
-}
+if [ -z "${metrics}" ]; then
+    echo "--- exporter log ---" >&2
+    docker exec knot-test-primary cat /tmp/exporter.log >&2 2>/dev/null || true
+    fail "could not scrape the exporter on 9433; see the log above"
+fi
 
-step_exporter
+# The server's own version, not a constant typed into this script.
+server_version=$(docker exec knot-test-primary /sbin/knotd --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+grep -qF "libknot_version=\"${server_version}\"" <<<"${metrics}" \
+    || fail "the exporter reports a different libknot than the server's ${server_version}"
+pass "the exporter and the server agree on libknot ${server_version}"
+
+# knot_build_info is emitted before the control socket is touched, so the check
+# above says nothing about the exporter being able to read the server. This one
+# does: the serial has to match what knotd actually holds.
+exported=$(awk -v k="knot_zone_serial{zone=\"${ZONE}.\"}" '$1 == k { printf "%.0f", $2 }' <<<"${metrics}")
+actual=$(docker exec knot-test-primary /sbin/knotc -c /config/knot.conf zone-status "${ZONE}" \
+    | sed -n 's/.*serial: \([0-9]*\).*/\1/p')
+[ -n "${exported}" ] || fail "the exporter exposes no serial for ${ZONE}; the sync alert would have nothing to compare"
+[ "${exported}" = "${actual}" ] || fail "the exporter reports serial ${exported}, knotd holds ${actual}"
+pass "the exporter reports the serial knotd actually holds (${exported})"
+
+grep -q "^knot_stats_response_code" <<<"${metrics}" \
+    || fail "no mod-stats counters after a query; the module is not doing anything"
+pass "mod-stats counters are exported"
 
 echo
 echo "All image tests passed. ✅"

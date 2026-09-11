@@ -41,9 +41,16 @@ XDP would also need privileged networking.
 
 `knot-exporter` is built into the same image and lives at `/bin/knot-exporter`.
 It reads the `knotd` control socket, so it runs as a sidecar sharing the pod's
-`rundir`, and it needs Knot's `mod-stats` module enabled to report anything
-beyond zone serials and memory. It listens on 9433 and serves `/metrics` and
-`/health`.
+`rundir`. It serves `/metrics` and `/health` on port 9433, but it binds
+`127.0.0.1` by default — pass `-web-listen-addr 0.0.0.0` or nothing can scrape
+it.
+
+Without `mod-stats` it still reports zone serials, zone size and maximum TTL,
+and the server's zone count. `mod-stats` is what adds the query and response
+counters. `knot_memory_usage_bytes` is read from `/proc` rather than the control
+socket, so it only appears when the exporter shares a PID namespace with
+`knotd`; in a normal sidecar it is absent, and `process_resident_memory_bytes`
+describes the exporter, not the server.
 
 It shares the image rather than having one of its own, because it is CGO code
 against `libknot` and upstream does not promise that a mismatched exporter and
@@ -55,9 +62,7 @@ reintroduce exactly the skew this avoids.
 
 Upstream releases the exporter in step with Knot and does not guarantee
 cross-version compatibility. That warning is about the prebuilt binaries; it
-does not apply to a build from source against a known library. The image test
-asserts the exporter reports the same `libknot` version the server was built
-from, so a mismatch fails rather than ships.
+does not apply to a build from source against a known library.
 
 ## Layout
 
@@ -100,13 +105,17 @@ The test script runs a hidden primary and a secondary against each other and
 checks what the platform relies on: the apex seeds through `knotc`, the
 secondary transfers the zone, an RFC 2136 update propagates over NOTIFY and
 IXFR, the transfer key cannot write to the zone, unsigned transfers are refused,
-and queries outside the zone are refused.
+and queries outside the zone are refused. It then starts the exporter against
+the primary's control socket and checks that the serial it exports is the one
+`knotc zone-status` reports, and that the `mod-stats` counters appear once a
+query has been answered.
 
 ## Releasing
 
-Push a `v*` tag. CI builds for amd64 and arm64, pushes to
-`ghcr.io/containdk/knot-container`, signs the digest and drafts a release. The
-arm64 build is emulated and takes considerably longer than the native one.
+Push a `v*` tag. CI builds amd64 natively, runs the image tests and the
+vulnerability scan against it, and only then builds for amd64 and arm64, pushes
+to `ghcr.io/containdk/knot-container`, signs the digest and drafts a release.
+The arm64 build is emulated and takes considerably longer than the native one.
 
 ## Licensing
 
