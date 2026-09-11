@@ -44,15 +44,21 @@ RUN curl -fsSLO "https://secure.nic.cz/files/knot-dns/knot-${KNOT_VERSION}.tar.x
     # Wolfi's gpg enables keyboxd, which makes it ignore --keyring. An empty
     # common.conf in our own home directory turns that back off.
     : > "${GNUPGHOME}/common.conf" && \
-    curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${KNOT_RELEASE_FINGERPRINT}" \
-        | gpg --dearmor > /tmp/knot-release.gpg && \
-    # The keyring holds this one key, so a signature by anyone else does not
-    # verify. The fingerprint is asserted as well, in case the keyserver
-    # answers with something other than what was asked for.
-    gpg --no-default-keyring --keyring /tmp/knot-release.gpg --batch --with-colons --fingerprint \
-        | grep -q "^fpr:::::::::${KNOT_RELEASE_FINGERPRINT}:" && \
-    gpg --no-default-keyring --keyring /tmp/knot-release.gpg --batch --verify \
-        "knot-${KNOT_VERSION}.tar.xz.asc" "knot-${KNOT_VERSION}.tar.xz" && \
+    curl -fsSL -o /tmp/knot-release.asc \
+        "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${KNOT_RELEASE_FINGERPRINT}" && \
+    gpg --dearmor < /tmp/knot-release.asc > /tmp/knot-release.gpg && \
+    # Assert on gpg's machine-readable status rather than its exit code. A
+    # keyring built from a keyserver response can hold more keys than the one
+    # asked for, and --verify is happy with a signature from any of them, so
+    # checking that the pinned fingerprint is present says nothing about which
+    # key actually signed. VALIDSIG names that key -- the signing subkey first
+    # and its primary last, so the pinned primary matches either way -- and
+    # GOODSIG rather than EXPKEYSIG or REVKEYSIG is what rejects a key that has
+    # since expired or been revoked.
+    gpg --no-default-keyring --keyring /tmp/knot-release.gpg --batch --status-fd 1 --verify \
+        "knot-${KNOT_VERSION}.tar.xz.asc" "knot-${KNOT_VERSION}.tar.xz" > /tmp/knot-verify.status && \
+    grep -q "^\[GNUPG:\] GOODSIG " /tmp/knot-verify.status && \
+    grep -q "^\[GNUPG:\] VALIDSIG .*${KNOT_RELEASE_FINGERPRINT}" /tmp/knot-verify.status && \
     tar -xf "knot-${KNOT_VERSION}.tar.xz"
 
 WORKDIR /build/knot-${KNOT_VERSION}
@@ -128,8 +134,13 @@ RUN apk add --no-cache \
         libedit \
         libidn2 \
         lmdb \
-        nghttp2 \
-        ngtcp2 \
+        # kdig, khost and knsupdate need libnghttp2 for DNS over HTTPS. The
+        # nghttp2 package is the tools build: it adds an HTTP/2 server and a
+        # reverse proxy, and c-ares and libev under them. ngtcp2 is not needed
+        # at all -- Knot links its QUIC support statically, so nothing in the
+        # image has a DT_NEEDED on libngtcp2, and the package's only effect is
+        # to pull OpenSSL into an image built entirely against GnuTLS.
+        libnghttp2-14 \
         userspace-rcu \
         zlib && \
     # Wolfi's nettle declares a runtime dependency on gmp-dev, which drags a

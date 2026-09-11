@@ -147,17 +147,20 @@ docker exec knot-test-primary sh -c "
     || fail "could not seed the zone apex"
 pass "seeded the zone apex through knotc"
 
-if docker exec knot-test-primary grep -q "missing glue" /tmp/knotd.log; then
-    fail "the seeded apex failed a semantic check"
-fi
+# zone-check reports every semantic problem, where grepping the log caught one
+# known message and read an empty or absent log as a pass. It exits 0 on
+# warnings, so the output is what has to be empty, not the status.
+checks=$(docker exec knot-test-primary /sbin/knotc -c /config/knot.conf zone-check "${ZONE}" 2>&1) \
+    || fail "zone-check could not run against ${ZONE}"
+[ -z "${checks}" ] || fail "the seeded apex failed a semantic check: ${checks}"
 pass "the seeded apex passes semantic checks"
 
 for attempt in $(seq 1 30); do
     status=$(docker exec knot-test-secondary /sbin/knotc -c /config/knot.conf zone-status "${ZONE}" || true)
-    [[ "${status}" == *"serial: 1"* ]] && break
+    [[ "${status}" =~ serial:\ 1([^0-9]|$) ]] && break
     sleep 1
 done
-[[ "${status}" == *"serial: 1"* ]] || fail "the secondary never transferred the zone"
+[[ "${status}" =~ serial:\ 1([^0-9]|$) ]] || fail "the secondary never transferred the zone"
 pass "the secondary transferred the zone"
 
 docker exec knot-test-primary sh -c "
@@ -175,7 +178,14 @@ pass "an update reached the secondary over NOTIFY and IXFR"
 
 docker exec knot-test-primary sh -c "
     printf 'server ${primary_ip}\nzone ${ZONE}\nupdate add refused.${ZONE}. 300 A 203.0.113.1\nsend\n' > /tmp/bad.txt
-    /usr/bin/knsupdate -y hmac-sha256:transfer-key:${TSIG} /tmp/bad.txt" >/dev/null 2>&1 || true
+    /usr/bin/knsupdate -y hmac-sha256:transfer-key:${TSIG} /tmp/bad.txt" >/dev/null 2>&1 \
+    && fail "the primary accepted an update signed with the transfer key"
+
+# The check below is that a zone-read finds nothing. That only means something
+# if a zone-read can find anything, so read a record known to be there first --
+# otherwise a renamed subcommand or a dead control socket reads as a pass.
+docker exec knot-test-primary /sbin/knotc -c /config/knot.conf zone-read "${ZONE}" api A >/dev/null 2>&1 \
+    || fail "zone-read cannot read a record that is in the zone; the check below would prove nothing"
 docker exec knot-test-primary /sbin/knotc -c /config/knot.conf zone-read "${ZONE}" refused A >/dev/null 2>&1 \
     && fail "an update signed with the transfer key was accepted"
 pass "the transfer key cannot write to the zone"

@@ -16,12 +16,18 @@ calls, and the vulnerability scan reflects that:
 | --- | --- | --- |
 | Knot DNS | 3.6.0 | 3.6.0 |
 | libc | glibc | glibc |
-| Size | 159 MB | 58 MB |
-| Packages | 107 | 37 |
+| Size | 159 MB | 54 MB |
+| Packages | 107 | 33 |
 | Vulnerabilities | 213, six critical | 0 |
 
 Of the upstream image's 213 findings, only 20 had a fixed version available, so
 most could not be resolved by updating anything.
+
+Read the last row for what it is. Knot is compiled from a tarball, so it carries
+no package metadata and the scanner does not look at it — the comparison is
+Debian's packages including Knot against Wolfi's packages excluding it. A Knot
+DNS advisory would show up in the upstream image and not here. What covers that
+is bumping `KNOT_VERSION`, not the scan.
 
 Alpine packages Knot and would be smaller still, but its stable branch carries
 3.4.9 and its edge branch 3.6.0's predecessor. Building from the release tarball
@@ -36,6 +42,12 @@ available.
 Left out deliberately, because the platform does not use them and each one drags
 libraries into the runtime image: dnstap, redis, XDP, GeoIP, systemd and D-Bus.
 XDP would also need privileged networking.
+
+The runtime packages are only the ones something links. QUIC is compiled into
+`libknot` statically, so no `ngtcp2` package is installed; `libnghttp2-14` is
+there for `kdig +https`, rather than the `nghttp2` tools package that would also
+bring an HTTP/2 server and a reverse proxy. OpenSSL is still present because
+`apk-tools` in the base image links it — nothing in Knot does.
 
 ## The exporter
 
@@ -54,8 +66,8 @@ describes the exporter, not the server.
 
 It shares the image rather than having one of its own, because it is CGO code
 against `libknot` and upstream does not promise that a mismatched exporter and
-daemon work together. Compiling it here, against the `libknot` built two stages
-earlier, makes the pair match by construction — a real API break fails the build
+daemon work together. Compiling it here, against the `libknot` built in the same
+stage, makes the pair match by construction — a real API break fails the build
 instead of misbehaving at runtime. A separate image would have to carry
 `libknot` and its whole dependency chain anyway, so it would save little and
 reintroduce exactly the skew this avoids.
@@ -85,8 +97,12 @@ without one.
 The build downloads the release tarball and its detached signature from
 `secure.nic.cz` and verifies the signature against a pinned fingerprint —
 `742FA4E95829B6C5EAC6B85710BB7AF6FEBBD6AB`, Daniel Salzman, who signs the Knot
-DNS releases. The keyring holds that one key, so a tarball signed by anyone else
-does not verify.
+DNS releases. The build asserts on gpg's status output rather than its exit
+code: a keyserver can answer with more keys than the one asked for, and
+`--verify` accepts a signature from any key in the keyring it was handed. What
+the build requires is `VALIDSIG` naming the pinned key and `GOODSIG` rather than
+`EXPKEYSIG` or `REVKEYSIG`, so a signature by anyone else, or by that key after
+it expires or is revoked, fails the build.
 
 Pinning the key rather than a tarball checksum means a version bump is a
 one-line change and the tarball is still verified.
@@ -114,8 +130,14 @@ query has been answered.
 
 Push a `v*` tag. CI builds amd64 natively, runs the image tests and the
 vulnerability scan against it, and only then builds for amd64 and arm64, pushes
-to `ghcr.io/containdk/knot-container`, signs the digest and drafts a release.
+to `ghcr.io/containdk/knot-container`, signs the digest and publishes a release.
 The arm64 build is emulated and takes considerably longer than the native one.
+Only amd64 is tested; nothing runs the suite against the arm64 image.
+
+Tags are `<knot version>-<packaging revision>`, and the revision is always
+present — `v3.6.1-1`, not `v3.6.1`. Renovate reads the suffix as a compatibility
+tag and only offers versions carrying the same one, so a release without it
+drops out of the consumers' update path.
 
 ## Licensing
 

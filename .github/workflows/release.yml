@@ -4,6 +4,10 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -78,6 +82,21 @@ jobs:
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # The packaging revision is carried as a semver prerelease (3.6.0-1),
+          # which metadata-action's default latest=auto refuses to tag latest.
+          # Left alone, latest would stay frozen on whichever release had no
+          # revision suffix.
+          flavor: |
+            latest=true
+          # metadata-action reads the repository LICENSE, which covers the
+          # packaging here and not the image's contents, and the vendor and
+          # author labels are inherited from the Chainguard base.
+          labels: |
+            org.opencontainers.image.licenses=GPL-2.0-or-later
+            org.opencontainers.image.vendor=containdk
+            org.opencontainers.image.authors=containdk
+            org.opencontainers.image.title=knot-container
+            org.opencontainers.image.description=Knot DNS built from the upstream release tarball on Wolfi
           tags: |
             type=semver,pattern={{version}}
 
@@ -113,13 +132,13 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           body: |
-            Image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}`
+            Image: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}`
 
             Verify the signature with:
 
             ```bash
             cosign verify \
-              --certificate-identity-regexp "https://github.com/${{ github.repository_owner }}/.*" \
+              --certificate-identity-regexp "^https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/v" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
               ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
             ```
