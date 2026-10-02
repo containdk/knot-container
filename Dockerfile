@@ -19,7 +19,7 @@ ARG XSYS_VERSION="v0.48.0"
 # second edit, and the tarball is still verified.
 ARG KNOT_RELEASE_FINGERPRINT="742FA4E95829B6C5EAC6B85710BB7AF6FEBBD6AB"
 
-FROM cgr.dev/chainguard/wolfi-base@sha256:65e1acb87a2bf356b92c5f70f3980f03b4bb51dfd483c834e01557525f15c1d9 AS builder
+FROM cgr.dev/chainguard/wolfi-base@sha256:824f77df45397eb954dfb963db255907ee8842e3446353ce93d688e5e862f51d AS builder
 ARG KNOT_VERSION
 ARG KNOT_RELEASE_FINGERPRINT
 
@@ -132,7 +132,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         -ldflags "-s -w -X main.version=${KNOT_EXPORTER_VERSION}" \
         -o /knot-exporter ./cmd/knot-exporter
 
-FROM cgr.dev/chainguard/wolfi-base@sha256:65e1acb87a2bf356b92c5f70f3980f03b4bb51dfd483c834e01557525f15c1d9
+FROM cgr.dev/chainguard/wolfi-base@sha256:824f77df45397eb954dfb963db255907ee8842e3446353ce93d688e5e862f51d
 ARG UID=53
 
 RUN apk add --no-cache \
