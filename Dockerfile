@@ -12,7 +12,7 @@ ARG KNOT_EXPORTER_VERSION="3.5.3"
 # GitHub's generated tag archives are not, so the commit is what can be checked.
 ARG KNOT_EXPORTER_COMMIT="e9b4344da7f53bb38cc34928705e920b93922ca3"
 # renovate: datasource=go depName=golang.org/x/sys
-ARG XSYS_VERSION="v0.48.0"
+ARG XSYS_VERSION="v0.49.0"
 
 # Daniel Salzman <daniel.salzman@nic.cz>, who signs the Knot DNS releases.
 # Pinning the key rather than a tarball checksum means a version bump needs no
