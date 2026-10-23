@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
+# syntax=docker/dockerfile:1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 
 # renovate: datasource=gitlab-tags depName=knot/knot-dns registryUrl=https://gitlab.nic.cz
 ARG KNOT_VERSION="3.6.0"
@@ -19,7 +19,7 @@ ARG XSYS_VERSION="v0.48.0"
 # second edit, and the tarball is still verified.
 ARG KNOT_RELEASE_FINGERPRINT="742FA4E95829B6C5EAC6B85710BB7AF6FEBBD6AB"
 
-FROM cgr.dev/chainguard/wolfi-base@sha256:65e1acb87a2bf356b92c5f70f3980f03b4bb51dfd483c834e01557525f15c1d9 AS builder
+FROM cgr.dev/chainguard/wolfi-base@sha256:f15fea2f49cb14dceaea491fcbde0d35e0c190126a744ac05a9838440d47d994 AS builder
 ARG KNOT_VERSION
 ARG KNOT_RELEASE_FINGERPRINT
 
@@ -132,7 +132,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
         -ldflags "-s -w -X main.version=${KNOT_EXPORTER_VERSION}" \
         -o /knot-exporter ./cmd/knot-exporter
 
-FROM cgr.dev/chainguard/wolfi-base@sha256:65e1acb87a2bf356b92c5f70f3980f03b4bb51dfd483c834e01557525f15c1d9
+FROM cgr.dev/chainguard/wolfi-base@sha256:f15fea2f49cb14dceaea491fcbde0d35e0c190126a744ac05a9838440d47d994
 ARG UID=53
 
 RUN apk add --no-cache \
